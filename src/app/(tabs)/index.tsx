@@ -1,10 +1,24 @@
 import * as Location from 'expo-location';
+import { Link } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import MapView from 'react-native-maps';
+import MapView, { Marker } from 'react-native-maps';
+
+import { API_BASE_URL } from '@/constants/api';
+
+type Venue = {
+  id: number;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  category: string;
+  distance_miles: number;
+};
 
 export default function MapScreen() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
+  const [venues, setVenues] = useState<Venue[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -20,6 +34,24 @@ export default function MapScreen() {
 
       const currentLocation = await Location.getCurrentPositionAsync({});
       setLocation(currentLocation);
+
+      try {
+        const { latitude, longitude } = currentLocation.coords;
+        const response = await fetch(
+          `${API_BASE_URL}/venues/nearby/?lat=${latitude}&lng=${longitude}&radius=10`
+        );
+
+        if (!response.ok) {
+          throw new Error(`API returned status ${response.status}`);
+        }
+
+        const data = await response.json();
+        setVenues(data);
+      } catch (error) {
+        console.error('Failed to fetch venues:', error);
+        setErrorMsg('Could not load nearby venues. Check that the backend server is running.');
+      }
+
       setLoading(false);
     })();
   }, []);
@@ -51,8 +83,20 @@ export default function MapScreen() {
           latitudeDelta: 0.05,
           longitudeDelta: 0.05,
         }}
-        showsUserLocation
-      />
+        showsUserLocation>
+        {venues.map((venue) => (
+          <Marker
+            key={venue.id}
+            coordinate={{ latitude: venue.latitude, longitude: venue.longitude }}
+            title={venue.name}
+            description={venue.address}
+          >
+            <Link href={`/venue/${venue.id}`} asChild>
+              <View />
+            </Link>
+          </Marker>
+        ))}
+      </MapView>
     </View>
   );
 }
