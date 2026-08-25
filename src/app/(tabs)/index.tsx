@@ -1,5 +1,5 @@
 import * as Location from 'expo-location';
-import { Link } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
@@ -17,6 +17,7 @@ type Venue = {
 };
 
 export default function MapScreen() {
+  const router = useRouter();
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [venues, setVenues] = useState<Venue[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -90,11 +91,8 @@ export default function MapScreen() {
             coordinate={{ latitude: venue.latitude, longitude: venue.longitude }}
             title={venue.name}
             description={venue.address}
-          >
-            <Link href={`/venue/${venue.id}`} asChild>
-              <View />
-            </Link>
-          </Marker>
+            onPress={() => router.push(`/venue/${venue.id}`)}
+          />
         ))}
       </MapView>
     </View>
