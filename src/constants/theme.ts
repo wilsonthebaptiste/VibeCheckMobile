@@ -14,6 +14,11 @@ export const Colors = {
     backgroundElement: '#F0F0F3',
     backgroundSelected: '#E0E1E6',
     textSecondary: '#60646C',
+    // Star ratings and the liveliness score. One accent value shared by the
+    // map card, the search results and the detail screen, so a score looks
+    // like the same thing everywhere it appears.
+    accent: '#F2A100',
+    accentMuted: '#D8D9DE',
   },
   dark: {
     text: '#ffffff',
@@ -21,6 +26,8 @@ export const Colors = {
     backgroundElement: '#212225',
     backgroundSelected: '#2E3135',
     textSecondary: '#B0B4BA',
+    accent: '#FFB524',
+    accentMuted: '#3A3D42',
   },
 } as const;
 

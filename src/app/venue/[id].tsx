@@ -1,21 +1,20 @@
 import * as Location from 'expo-location';
 import { Stack, useLocalSearchParams } from 'expo-router';
+import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
+import { StarRating } from '@/components/star-rating';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { API_BASE_URL } from '@/constants/api';
 import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 import { getDeviceId } from '@/utils/device';
+import type { LivelinessStatus } from '@/types/venue';
 
+/** What a user can SUBMIT is still one of five discrete levels. */
 type LivelinessValue = 1 | 2 | 3 | 4 | 5;
-
-type VenueStatus = {
-  liveliness: LivelinessValue | null;
-  liveliness_label: string;
-  report_count: number;
-};
 
 type VenueDetail = {
   id: number;
@@ -25,7 +24,15 @@ type VenueDetail = {
   longitude: number;
   category: string;
   created_at: string;
-  current_status: VenueStatus;
+  // Null for hand-added venues (e.g. seeded for device testing); present
+  // for venues sourced from OpenStreetMap.
+  osm_type: 'node' | 'way' | 'relation' | null;
+  osm_id: number | null;
+  // Note the asymmetry with LivelinessValue above: what comes BACK is the
+  // plain mean of the last hour's reports, so it is fractional (3.4). Typing
+  // this as 1|2|3|4|5 was correct only while the backend rounded before
+  // serialising, and would now silently mistype most real responses.
+  current_status: LivelinessStatus;
 };
 
 const LIVELINESS_LEVELS: { value: LivelinessValue; label: string }[] = [
@@ -48,6 +55,7 @@ function formatValidationErrors(body: Record<string, string[]> | null): string {
 export default function VenueDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const venueId = Number(id);
+  const theme = useTheme();
 
   const [venue, setVenue] = useState<VenueDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,18 +183,56 @@ export default function VenueDetailScreen() {
       <Stack.Screen options={{ title: venue.name }} />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <ThemedText type="subtitle">{venue.name}</ThemedText>
-        <ThemedText themeColor="textSecondary">{venue.address}</ThemedText>
+        {/* ~32% of OSM venues (including the real Blue Cue) have no address
+            tags at all -- an empty <Text> collapses but scrollContent's gap
+            still applies, so this must render conditionally, not just as "". */}
+        {venue.address ? (
+          <ThemedText themeColor="textSecondary">{venue.address}</ThemedText>
+        ) : null}
         <ThemedText themeColor="textSecondary" style={styles.category}>
           {venue.category}
         </ThemedText>
+        {venue.osm_type && venue.osm_id !== null && (
+          <Pressable
+            onPress={() =>
+              WebBrowser.openBrowserAsync(
+                `https://www.openstreetmap.org/${venue.osm_type}/${venue.osm_id}`
+              )
+            }
+            style={({ pressed }) => pressed && styles.pressed}>
+            <ThemedText type="link">View on OpenStreetMap</ThemedText>
+          </Pressable>
+        )}
 
         <View style={styles.section}>
-          <ThemedText type="smallBold">Current status</ThemedText>
-          <ThemedText style={styles.statusText}>{venue.current_status.liveliness_label}</ThemedText>
-          <ThemedText themeColor="textSecondary">
-            {venue.current_status.report_count} report
-            {venue.current_status.report_count === 1 ? '' : 's'}
-          </ThemedText>
+          <ThemedText type="smallBold">Right now</ThemedText>
+          {venue.current_status.liveliness === null ? (
+            // The common case across ~40,000 venues. Deliberately renders no
+            // stars: five empty outlines reads as "rated zero", which is a
+            // different and much worse claim than "nobody has said yet".
+            <ThemedText themeColor="textSecondary" style={styles.statusText}>
+              No reports yet — be the first
+            </ThemedText>
+          ) : (
+            <>
+              <View style={styles.scoreRow}>
+                <StarRating score={venue.current_status.liveliness} size={20} />
+                <ThemedText style={[styles.statusText, { color: theme.accent }]}>
+                  {venue.current_status.liveliness.toFixed(1)}
+                </ThemedText>
+              </View>
+              <ThemedText style={styles.statusLabel}>
+                {venue.current_status.liveliness_label}
+              </ThemedText>
+              {/* The window qualifier is required, not decorative: this is a
+                  60-minute rolling mean shown as a star rating, and without it
+                  it reads as a lifetime score like Yelp's. */}
+              <ThemedText themeColor="textSecondary">
+                {venue.current_status.report_count} report
+                {venue.current_status.report_count === 1 ? '' : 's'} in the last hour
+              </ThemedText>
+            </>
+          )}
         </View>
 
         <View style={styles.section}>
@@ -257,6 +303,14 @@ const styles = StyleSheet.create({
   },
   statusText: {
     fontSize: 20,
+  },
+  statusLabel: {
+    fontSize: 18,
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
   },
   chipsRow: {
     flexDirection: 'row',
