@@ -26,7 +26,28 @@ npx expo install <package>     # ALWAYS use this, not npm install, for any
 npm run start                  # start Metro dev server
 npm run web                    # run in browser (NOTE: react-native-maps does
                                 # NOT render on web — use only for non-map UI work)
+
+./node_modules/.bin/tsc --noEmit   # typecheck. Use the LOCAL binary, not
+                                    # `npx tsc`: npx has resolved to a
+                                    # different TypeScript here before and
+                                    # reported a wall of bogus errors inside
+                                    # node_modules.
+
+npx expo config --type introspect  # what the config plugins actually resolve
+                                    # to (Info.plist, entitlements). The only
+                                    # way to check native config from Windows,
+                                    # since iOS prebuild needs macOS/Linux.
+
+npx expo start --dev-client        # serve JS to a sideloaded native build
+                                    # (replaces `npm run start` once you are
+                                    # off Expo Go)
 ```
+
+Native builds run in CI — `.github/workflows/ios-build.yml`, triggered manually
+from the Actions tab. Debug (the default) produces a development build that
+loads JS from Metro, so JS changes need no rebuild. Output is an **unsigned**
+`.ipa`; Sideloadly signs it on your machine with a free Apple ID, over USB.
+Re-sign every 7 days (~30s, no rebuild). See the workflow header for details.
 
 Physical device testing (primary dev target — no Android device/emulator set
 up yet, iPhone via Expo Go is the main loop):
@@ -136,6 +157,88 @@ File-based routing via Expo Router (`src/app/`).
   the entire identity model, and it must never be surfaced to other users
   (matches backend's `device_id` being `write_only` in its serializer).
 
+### "Going to" intent and notifications (Chunk 7)
+
+- **`src/hooks/use-visit-intent.tsx`** — the whole lifecycle, mounted **once**
+  in `src/app/_layout.tsx` as `<VisitIntentProvider>`. Root, not the map screen:
+  the two moments this exists for (arriving, and having been somewhere 30
+  minutes) happen while the user is doing something else, and a provider on one
+  screen would stop watching the instant they navigated away.
+  - `intentRef` mirrors the `intent` state because the location callback and the
+    notification listener both fire from **native**, outside React's render
+    cycle — reading `intent` there closes over whatever it was when the effect
+    was set up, which is stale by definition.
+  - `arrivingRef` exists because a burst of GPS fixes would otherwise each fire
+    their own arrival POST.
+  - `handledResponsesRef` dedupes by notification id: a tap can arrive **twice**
+    — once from `getLastNotificationResponseAsync()` (the cold-launch read) and
+    once from the live listener.
+  - Arrival is detected with foreground `watchPositionAsync` at
+    **`Accuracy.High`, not `Balanced`**. The tightest threshold is 0.1 mi
+    (161 m) and Balanced is only good to ~100 m — enough error to announce an
+    arrival from across the block. It runs only while an intent is unarrived, so
+    the cost is bounded by one trip.
+  - **This single effect is the only thing that differs between the Expo Go and
+    native builds.** Step 4 of the plan swaps it for
+    `Location.startGeofencingAsync`; the model, endpoints, notifications and UI
+    are all unchanged.
+- **`src/utils/notifications.ts`** — the handler fields are
+  **`shouldShowBanner`/`shouldShowList`**. `shouldShowAlert` is deprecated in
+  SDK 56 and silently produces **no banner at all** while the app is
+  foregrounded, which looks exactly like "notifications are broken" when you are
+  testing with the app open. Category identifiers must not contain `:` or `-`.
+  "Not right now" sets `opensAppToForeground: false`, which means a killed app
+  never delivers that response — fine, because there is nothing to do with it.
+  Everything here is a **local** notification: that is the one notification
+  feature Expo Go still supports, and it needs no `aps-environment` entitlement,
+  which is the one a free Apple ID cannot sign.
+- **`src/utils/visit-intent.ts`** — API calls plus the AsyncStorage mirror. The
+  cache exists so a cold launch renders the button in the right state before the
+  network answers; without it the chip flickers "Are you going?" → "Going" on
+  every open. It also holds the two scheduled notification ids, which exist
+  **only on this device** and cannot be recovered from the server — so a
+  re-hydrate carries them by hand, and withdraws them if the server names a
+  different venue than the cache did.
+- **`src/utils/arrival.ts`** — `completeArrival()`. Plain async function, **no
+  React on purpose**: when iOS wakes the app for a geofence crossing it runs a
+  **headless** JS context with no component tree, no provider and no state to
+  set. The background task and the foreground watcher both call this; the hook
+  only adds an in-flight guard and copies the result into state. Safe to call
+  twice — the server sets `arrived_at` once.
+- **`src/utils/geofence.ts`** — the real background arrival trigger.
+  `TaskManager.defineTask` is called at **module scope**, and
+  `src/app/_layout.tsx` imports the module for that side effect alone: iOS
+  expects the task to exist by the time the bundle finishes evaluating, so
+  defining it in a component or an effect registers it too late and the event
+  is dropped *silently*, in the one situation the feature exists for.
+  - Geofencing does **not** replace the foreground watcher; they cover each
+    other. iOS only fires ENTER on *crossing* a boundary, so declaring while
+    already inside the radius may fire nothing — which is exactly what the
+    device test does, since the test venue sits at your feet. Conversely the
+    foreground watcher stops when the app is backgrounded.
+  - The task must **not** report `region.latitude/longitude` as the device's
+    position — that is the venue's own coordinate, so the server's proximity
+    re-check would compare the venue against itself and rubber-stamp anything.
+    It takes a real fix (last-known, then current).
+  - `syncArrivalGeofence()` runs on launch because iOS **persists registered
+    regions across app launches** — without it a cancelled intent leaves a live
+    geofence that fires days later for a trip nobody is taking.
+- **`src/utils/distance.ts`** — `haversineMiles()`, deliberately the same
+  formula *and radius* as the backend's `haversine_distance`. The client decides
+  locally whether it has arrived and the server re-checks that same claim
+  against the same threshold; a different approximation here would create a band
+  of positions where the phone says "you made it" and the server answers 403 —
+  and the watcher would retry that forever, silently.
+- **`src/components/going-button.tsx`** — rendered in `venue-card.tsx`
+  **outside** the body `Pressable`. Nested inside it, a tap on "Yes" also counts
+  as a tap on the card and pushes the detail screen out from under the answer
+  the user just gave. Its three states come from the provider, so the map card
+  and the detail screen can never disagree.
+- The server owns **`proximity_threshold_miles`**, **`dwell_minutes`** and
+  **`nudge_minutes`**, and hands them over in the intent payload — the same
+  pattern `/in-bounds/` uses for `valid_span`. Never hardcode them. This is what
+  lets `DWELL_MINUTES` drop from 30 to 2 for a device test with no new build.
+
 ## Known gotchas
 
 - Always set explicit `backgroundColor`/`color` in styles — relying on
@@ -166,6 +269,27 @@ File-based routing via Expo Router (`src/app/`).
     change as the map moves. Markers are ranked by latitude for a stable
     order, and the selected pin is lifted above the rest and recoloured so it
     is visually identifiable underneath the card.
+- **`plugins/with-no-push-entitlement.js` is load-bearing for free signing.**
+  `expo-notifications` ships an `app.plugin.js`, so Expo autolinking applies its
+  config plugin **whether or not it is listed in `app.json`**, and that plugin
+  sets `aps-environment` — the *remote push* entitlement, and the one entitlement
+  a free Apple ID cannot sign. VibeCheck only ever sends **local** notifications,
+  so the entitlement buys nothing and costs the entire free sideloading path.
+  Without the strip, Sideloadly fails at install with a provisioning-profile
+  error that never mentions notifications. The CI workflow fails the build if it
+  ever comes back. Local plugins run *after* autolinked ones, which is why a
+  `delete` works. Remove this only if real push is added — which requires the
+  $99/yr program anyway, at which point the entitlement becomes signable.
+- `UIBackgroundModes` (`location` from expo-location, `fetch` from
+  expo-task-manager) is an **Info.plist property, not an entitlement** — per
+  Apple's developer forums. That distinction is the whole reason background
+  geofencing is possible on a free account.
+- `ios/` and `android/` are **gitignored** — this project uses Continuous
+  Native Generation. `app.json` plus the config plugins are the single source of
+  truth, and CI runs `expo prebuild` fresh. Never commit a generated native
+  project. iOS prebuild **cannot run on Windows** (it errors out); use
+  `npx expo config --type introspect` to check what the plugins resolve to
+  without generating anything.
 - `react-native-maps` requires a physical device or simulator; it does not
   render in `npm run web`.
 - Android map rendering needs a Google Maps API key, not yet configured —

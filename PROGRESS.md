@@ -3,9 +3,11 @@
 MVP scope: single feature — anonymous crowdsourced venue liveliness reporting.
 No user accounts, no social layer, no venue control, single city launch.
 
-## Current status: Chunk 6 complete — verified end-to-end on a physical
-iPhone (2026-08-27). Chunks 1–5 are done and were verified the same way.
-No further chunks are defined yet.
+## Current status: Chunk 7 steps 1–2 complete and **verified on a physical
+iPhone in Expo Go** (2026-08-27) — all ten test-plan steps passed. Steps 3–4
+(native build + real background geofencing) are written but **not yet run**:
+they need a CI build and a Sideloadly install, which is the next action.
+Chunks 1–6 are complete and were verified end-to-end the same way.
 
 ### Chunk 1 — Backend foundation ✅ complete (separate repo)
 See `../VibeCheck/CLAUDE.md`. Venue/Report models, migrations, Django admin.
@@ -176,3 +178,130 @@ venue pairs whose pins physically overlap** (The Golden Bear ↔ Der Biergarten
 identifiable underneath the card. Pins keep their true coordinates; spreading or
 clustering them was considered and rejected, since report submission is gated on
 physically standing near the venue.
+
+### Chunk 7 — "Going to" intent, arrival & dwell notifications
+
+Goal: stop relying on people remembering to open the app. Declare you're
+heading somewhere, and the phone prompts you at the two moments a report is
+actually worth writing — on arrival, and again once you've settled in.
+
+**The constraint that shaped this.** Expo Go cannot do background location or
+geofencing (SDK 56 docs: *"You must use a development build…"*). Since the
+notifications must fire with the app closed, Expo Go can't be the final target.
+Research settled it: from Apple's developer forums, **`UIBackgroundModes` is an
+Info.plist property, not an entitlement** — so background location needs no
+signed entitlement and a **free** Apple ID can ship it. Only *push* needs the
+entitlement a free account lacks, and this feature uses only **local**
+notifications, which work in Expo Go and in a native build alike. That makes a
+$0 path real: `expo prebuild` → GitHub Actions `macos-latest` (free and
+unlimited for public repos) → unsigned IPA → Sideloadly + free Apple ID over
+USB, re-signed every 7 days (~30s, no rebuild).
+
+Sequencing is **feature first, then go native**: steps 1–2 are fully testable in
+Expo Go today, and step 4 changes exactly one effect.
+
+#### Step 1 — Backend intent model ✅ complete (separate repo)
+
+`VisitIntent`, with `device_id` **unique** — that constraint *is* the "only one
+venue per device" rule, since declaring is an `update_or_create` and a new
+declaration overrides the old one by construction rather than by cleanup code.
+Endpoints: `PUT /api/venues/<pk>/intent/`, `GET`/`DELETE /api/intent/`,
+`POST /api/intent/arrived/`, `GET /api/venues/here/`. The threshold selection
+was extracted out of `submit_report` into `proximity_threshold_for(venue)` so
+arrival and submission can never disagree. New `manage.py create_test_venue`.
+
+- **101 → 154 backend tests**, all passing.
+- Two subtle traps caught and pinned with tests: `created_at` must **not** be
+  `auto_now_add` (it only fires on INSERT, so an upsert would keep the original
+  timestamp and a re-declared intent could be born already past its TTL), and
+  `/venues/here/`'s bbox pre-filter must correct longitude by `cos(lat)` — at
+  64°N a degree of longitude is 30 mi, not 69. Both were verified by breaking
+  the code and confirming the test fails.
+
+#### Step 2 — Notifications, UI, intent logic ✅ complete, device-verified
+
+`expo-notifications` (via `npx expo install`), `src/utils/notifications.ts`,
+`src/utils/visit-intent.ts`, `src/utils/distance.ts`,
+`src/hooks/use-visit-intent.tsx` (mounted at the app root),
+`src/components/going-button.tsx` in the venue card and the detail screen.
+Three notifications: nudge at `nudge_minutes`, arrival, and a **scheduled**
+dwell prompt at arrival + `dwell_minutes` (scheduled, not `setTimeout`, so it
+survives the app being closed). Arrival uses foreground `watchPositionAsync`
+for now — that one effect becomes `startGeofencingAsync` in step 4.
+
+Verified before it reaches the phone:
+- `./node_modules/.bin/tsc --noEmit` clean
+- Every endpoint exercised over HTTP against the running server
+- **Client/server arrival agreement simulation**: 58 positions, including a
+  dense sweep through the 0.1 mi boundary, comparing the client's local
+  haversine decision against what the server actually answers. Zero
+  disagreements, and **zero positions where the client would POST forever**
+  because it thinks it arrived and the server keeps saying 403. That loop would
+  have been completely silent on a device.
+
+All ten device steps passed on 2026-08-27, including the two that matter
+most: declaring on Far Bar never fired an arrival, and the dwell prompt fired
+with the app fully swiped closed.
+
+#### Step 3 — Native build ✅ written, ⏳ never run
+
+`.github/workflows/ios-build.yml` — manual trigger, `macos-latest` (free and
+unlimited for public repos), `expo prebuild` → `xcodebuild archive` with signing
+disabled → unsigned `.ipa` artifact. `expo-dev-client` added so the JS loop
+stays as fast as Expo Go. `ios/`/`android/` stay gitignored (Continuous Native
+Generation) — `app.json` plus config plugins remain the single source of truth,
+and the Windows dev machine never has to prebuild, which it cannot do for iOS.
+
+**The trap this turned up:** `expo-notifications` ships an `app.plugin.js`, so
+Expo autolinking applies its config plugin *whether or not it is listed in
+app.json*, and it sets **`aps-environment`** — the remote-push entitlement, and
+precisely the one a free Apple ID cannot sign. VibeCheck sends only local
+notifications, so it bought nothing and would have broken sideloading with a
+provisioning-profile error that never mentions notifications.
+`plugins/with-no-push-entitlement.js` strips it, and the workflow fails the
+build if it ever returns. Verified via `expo config --type introspect`:
+entitlements are now `{}` while `UIBackgroundModes` keeps `location`.
+
+#### Step 4 — Real geofencing ✅ written, ⏳ untested
+
+`expo-task-manager` + `Location.startGeofencingAsync`. Arrival logic was
+factored out of the React hook into `src/utils/arrival.ts` first, because iOS
+runs a **headless** JS context when it wakes a terminated app — there is no
+provider and no state to set there.
+
+Geofencing **supplements** the foreground watcher rather than replacing it, and
+that is deliberate: iOS only fires ENTER on *crossing* a boundary, so declaring
+while already inside the radius (exactly what the device test does, since the
+test venue is at your feet) may fire nothing at all. Each covers the other's
+blind spot, and both funnel into the same idempotent `completeArrival`.
+
+### Chunk 7 device test plan
+
+Two levers make this testable without going anywhere.
+
+1. `python manage.py create_test_venue` seeds **VibeCheck Test Bar** at
+   38.5796707, -121.4678853 (2711 E St, Sacramento — a house-level Nominatim
+   match) and **VibeCheck Far Bar** 0.5 mi north. The far one is the point:
+   without it, "arrival fired" proves nothing, because a bug that fires arrival
+   unconditionally also passes.
+2. Set `DWELL_MINUTES = 2` in the backend's `settings.py` while testing. It is
+   served to the client, so switching back to 30 needs no app change.
+
+| # | Step | Expected |
+|---|---|---|
+| 1 | Declare "going" on **Far Bar** | No arrival notification, ever |
+| 2 | Declare on **Test Bar** | Backend holds exactly **one** `VisitIntent` row, now pointing at Test Bar (check `/admin/`) |
+| 3 | Wait ~15s | "You made it." with **Yes** / **Not right now** |
+| 4 | Tap **Not right now** | Dismisses; the intent stays arrived |
+| 5 | Tap **Yes** | Opens Test Bar's report screen; submit and confirm the score updates |
+| 6 | Wait 2 minutes | The dwell prompt fires |
+| 7 | Re-declare, arrive, then fully background the app before the timer | Dwell still fires |
+| 8 | Declare, then tap **Cancel** | No notifications after; backend row gone |
+| 9 | With the app open and foregrounded | A visible banner. If not, `shouldShowBanner` is wrong |
+| 10 | *(after step 4 only)* Kill the app, then approach Test Bar | Arrival fires with the app closed — the payoff the native build buys |
+
+Steps 1–9 passed in Expo Go on 2026-08-27. **Step 10 is still outstanding** and
+cannot be done in Expo Go at all — it needs the native build (steps 3–4).
+
+Afterwards: put `DWELL_MINUTES` back to 30 and run
+`manage.py create_test_venue --clear`.

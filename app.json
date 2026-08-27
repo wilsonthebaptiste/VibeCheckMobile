@@ -9,6 +9,7 @@
     "userInterfaceStyle": "automatic",
         "ios": {
       "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.wilsonthebaptiste.vibecheckmobile",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "VibeCheck uses your location to show nearby venues and verify you're at a venue when you submit a report."
       }
@@ -43,9 +44,13 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "VibeCheck uses your location to show nearby venues and verify you're at a venue when you submit a report."
+          "locationWhenInUsePermission": "VibeCheck uses your location to show nearby venues and verify you're at a venue when you submit a report.",
+          "locationAlwaysAndWhenInUsePermission": "VibeCheck checks whether you've arrived at the venue you said you were heading to, so it can ask you for a report at the right moment.",
+          "isIosBackgroundLocationEnabled": true
         }
-      ]
+      ],
+      "expo-dev-client",
+      "./plugins/with-no-push-entitlement"
     ],
     "experiments": {
       "typedRoutes": true,

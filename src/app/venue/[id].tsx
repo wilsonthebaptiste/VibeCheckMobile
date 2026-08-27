@@ -4,6 +4,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
+import { GoingButton } from '@/components/going-button';
 import { StarRating } from '@/components/star-rating';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -203,6 +204,10 @@ export default function VenueDetailScreen() {
             <ThemedText type="link">View on OpenStreetMap</ThemedText>
           </Pressable>
         )}
+
+        {/* Same provider-backed state as the map card, so the two screens can
+            never disagree about whether you said you were going. */}
+        <GoingButton venueId={venueId} variant="full" />
 
         <View style={styles.section}>
           <ThemedText type="smallBold">Right now</ThemedText>

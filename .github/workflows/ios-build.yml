@@ -1,0 +1,137 @@
+# Builds an UNSIGNED iOS .ipa on GitHub's macOS runners.
+#
+# Why this exists: the "going to" feature needs background location, which
+# Expo Go cannot do -- it requires a native build. Apple's own developer forums
+# confirm that `UIBackgroundModes` is an Info.plist property and NOT an
+# entitlement, so a FREE Apple ID can ship it. What a free account cannot sign
+# is `aps-environment` (remote push), which is why plugins/with-no-push-entitlement.js
+# strips it: VibeCheck only ever sends local notifications.
+#
+# So the whole pipeline costs nothing: standard macos-latest runners are free
+# and unlimited for public repositories (only the *larger* runners are billed),
+# and the unsigned IPA is signed on your own machine by Sideloadly using a free
+# Apple ID. Re-sign every 7 days -- that takes ~30 seconds and needs no rebuild.
+#
+# Output: an `.ipa` artifact on the run's summary page. Download it, then:
+#   Sideloadly -> select the .ipa -> your Apple ID -> Start (iPhone on USB)
+# First launch also needs the profile trusted, once:
+#   Settings -> General -> VPN & Device Management
+#
+# Debug (the default) produces a DEVELOPMENT build: it loads JS from Metro at
+# runtime, so day-to-day work stays as fast as Expo Go and needs no rebuild.
+# That also means EXPO_PUBLIC_API_URL comes from your local .env every time you
+# bundle -- which matters here, because the backend lives on a LAN IP that
+# changes with the WiFi network. Release bakes the bundle (and that URL) in.
+
+name: iOS build (unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Debug = dev build that connects to Metro. Release = standalone, bundle baked in.'
+        type: choice
+        options: [Debug, Release]
+        default: Debug
+      api_url:
+        description: 'EXPO_PUBLIC_API_URL. Only used by Release -- Debug reads your local .env at bundle time.'
+        type: string
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      # Generates ios/ from app.json and the config plugins. The directory is
+      # gitignored on purpose (Continuous Native Generation): app.json stays
+      # the single source of truth, and there is no committed native project to
+      # drift out of sync or to conflict on. It also means the Windows dev
+      # machine never has to run prebuild, which it cannot do for iOS anyway.
+      - name: Prebuild the iOS project
+        env:
+          EXPO_PUBLIC_API_URL: ${{ inputs.api_url }}
+        run: npx expo prebuild --platform ios
+
+      - name: Verify the entitlements a free Apple ID can actually sign
+        run: |
+          set -euo pipefail
+          ENTITLEMENTS=$(find ios -name '*.entitlements' -not -path '*/Pods/*' | head -1)
+          echo "Entitlements file: ${ENTITLEMENTS:-<none>}"
+          if [ -n "$ENTITLEMENTS" ]; then
+            cat "$ENTITLEMENTS"
+            # Fail loudly HERE rather than letting Sideloadly fail later with a
+            # provisioning-profile error that never mentions notifications.
+            if grep -q 'aps-environment' "$ENTITLEMENTS"; then
+              echo "::error::aps-environment is present. A free Apple ID cannot sign it. See plugins/with-no-push-entitlement.js"
+              exit 1
+            fi
+          fi
+          PLIST=$(find ios -name 'Info.plist' -not -path '*/Pods/*' -not -path '*Tests*' | head -1)
+          echo "Background modes:"
+          /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$PLIST" \
+            || { echo "::error::UIBackgroundModes missing -- geofencing will not run in the background."; exit 1; }
+
+      - name: Archive
+        env:
+          EXPO_PUBLIC_API_URL: ${{ inputs.api_url }}
+        run: |
+          set -euo pipefail
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "Workspace: $WORKSPACE   Scheme: $SCHEME"
+
+          # Signing is disabled at every level: the runner has no Apple
+          # credentials and none are wanted. Sideloadly signs on your machine.
+          #
+          # Deliberately NOT piped through xcpretty/xcbeautify -- neither is
+          # guaranteed on the runner image, and a missing formatter would fail
+          # the build for a reason that has nothing to do with the build.
+          xcodebuild archive \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration "${{ inputs.configuration }}" \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO
+
+      # An .ipa is just a zip with the .app inside a top-level Payload/ folder.
+      # `xcodebuild -exportArchive` is the usual route and is not usable here --
+      # it insists on a signing identity.
+      - name: Package as .ipa
+        run: |
+          set -euo pipefail
+          APP=$(ls -d "$RUNNER_TEMP"/app.xcarchive/Products/Applications/*.app | head -1)
+          NAME=$(basename "$APP" .app)
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -qry "$NAME.ipa" Payload)
+          ls -lh "$RUNNER_TEMP/$NAME.ipa"
+          echo "IPA_PATH=$RUNNER_TEMP/$NAME.ipa" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VibeCheck-ios-${{ inputs.configuration }}-unsigned
+          path: ${{ env.IPA_PATH }}
+          # Long enough to re-download during a 7-day signing cycle without
+          # burning a rebuild.
+          retention-days: 14
+          if-no-files-found: error

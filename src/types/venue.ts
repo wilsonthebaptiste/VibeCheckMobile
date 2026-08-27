@@ -67,6 +67,37 @@ export type InBoundsResponse = {
   bins: VenueBin[];
 };
 
+/**
+ * The device's standing "I'm going here" declaration.
+ *
+ * The last three fields are RULES the server owns and hands over, exactly like
+ * `valid_span_*` on `InBoundsResponse`. The client evaluates arrival against
+ * `proximity_threshold_miles` on each GPS tick rather than round-tripping, and
+ * schedules the dwell prompt `dwell_minutes` after arriving -- so retuning
+ * either (or dropping dwell to 2 minutes for a device test) needs no new build.
+ * Never hardcode them here.
+ */
+export type VisitIntent = {
+  venue: Venue;
+  declared_at: string;
+  /** Null until the server has confirmed the device is within range. */
+  arrived_at: string | null;
+  expires_at: string;
+  proximity_threshold_miles: number;
+  dwell_minutes: number;
+  nudge_minutes: number;
+};
+
+export type VisitIntentResponse = {
+  /** Null is the normal resting state: most of the time nobody is going out. */
+  intent: VisitIntent | null;
+};
+
+/** `GET /api/venues/here/` -- the venue you are standing in, or none. */
+export type VenueHereResponse = {
+  venue: (Venue & { distance_miles: number }) | null;
+};
+
 export type VenueSearchResult = Venue & { type: 'venue' };
 
 export type PlaceSearchResult = Bounds & {
