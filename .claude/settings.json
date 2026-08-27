@@ -1,5 +1,56 @@
 {
   "enabledPlugins": {
     "expo@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash(*)",
+      "PowerShell(*)"
+    ],
+    "ask": [
+      "Bash(eas *)",
+      "Bash(npx eas *)",
+      "Bash(expo build*)",
+      "Bash(npx expo build*)",
+      "PowerShell(eas *)",
+      "PowerShell(npx eas *)",
+
+      "Bash(gcloud *)",
+      "Bash(aws *)",
+      "Bash(az *)",
+      "Bash(doctl *)",
+      "Bash(heroku *)",
+      "Bash(fly *)",
+      "Bash(flyctl *)",
+      "Bash(vercel *)",
+      "Bash(netlify *)",
+      "Bash(railway *)",
+      "Bash(render *)",
+      "Bash(supabase *)",
+      "Bash(terraform *)",
+      "Bash(pulumi *)",
+      "PowerShell(gcloud *)",
+      "PowerShell(aws *)",
+      "PowerShell(az *)",
+
+      "Bash(npm publish*)",
+      "Bash(yarn publish*)",
+      "Bash(pnpm publish*)",
+      "Bash(twine upload*)",
+      "Bash(docker push*)",
+
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(*manage.py flush*)",
+      "PowerShell(Remove-Item -Recurse -Force *)"
+    ]
   }
 }
